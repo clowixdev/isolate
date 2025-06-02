@@ -5,20 +5,19 @@ Mishenev Nikita 5131001/30002
 
 */
 
-#include <stdio.h>
-#include <sched.h>
-#include <stdlib.h>
 #include <stdarg.h>
-#include <unistd.h>
 #include <sys/prctl.h>
 #include <wait.h>
-#include <memory.h>
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 
-#define STACKSIZE (1024*1024)
+#define STACKSIZE       (1024*1024)
+#define DEFAULT_UID     (1000)
+
 static char cmd_stack[STACKSIZE];
 
 struct params {
@@ -35,13 +34,10 @@ void display_help() {
             "\tisolate ./test_script\truns your script in isolated space\n";
 }
 
-void kill_thread(const char *fmt, ...) {
-    va_list params;
-
-    va_start(params, fmt);
-    vfprintf(stderr, fmt, params);
-    va_end(params);
-
+template <typename T, typename...Params>
+void kill_thread(T estr, Params&&...params) {
+    printf(estr, params...);
+    
     exit(1);
 }
 
@@ -66,19 +62,60 @@ int cmd_exec(void *arg) {
         kill_thread("cannot PR_SET_PDEATHSIG for child process: %m\n");
     }
 
-    params *params = (struct params *) arg;
+    params *params = (struct params *)arg;
     await_setup(params->fd[0]);
+
+    if (setgid(0) == -1) {
+        kill_thread("Failed to setgid: %m\n");
+    }   
+    if (setuid(0) == -1) {
+        kill_thread("Failed to setuid: %m\n");
+    }
 
     char **argv = params->argv;
     char *cmd = argv[0];
-    cout << "Launching <"<< cmd << "> in isolated namespaces..." << endl;
-    cout << "__________________________________________________" << endl;
+    cout << "Launching <"<< cmd << "> in isolated namespaces...\n"
+            "__________________________________________________" << endl;
 
     if (execvp(cmd, argv) == -1) {
         kill_thread("Failed to exec %s: %m\n", cmd);
     }
 
     return 1;
+}
+
+void clean_ss(stringstream &ss1, stringstream &ss2) {
+    ss1.str("");
+    ss1.clear();
+    ss2.str("");
+    ss2.clear();
+}
+
+void setup_uns(int pid) {
+    stringstream path;
+    stringstream line;
+
+    path << "/proc/" << pid << "/uid_map";
+    line << "0 " << DEFAULT_UID << " 1\n";
+    ofstream uid_mapper(path.str());
+    uid_mapper << line.str();
+    uid_mapper.close();
+
+    clean_ss(path, line);
+    
+    path << "/proc/" << pid << "/setgroups";
+    line << "deny";
+    ofstream setgroups_setup(path.str());
+    setgroups_setup << line.str();
+    setgroups_setup.close();
+
+    clean_ss(path, line);
+
+    path << "/proc/" << pid << "/gid_map";
+    line << "0 " << DEFAULT_UID << " 1\n";
+    ofstream gid_mapper(path.str());
+    gid_mapper << line.str();
+    gid_mapper.close();
 }
 
 int main(int argc, char **argv) {
@@ -89,7 +126,7 @@ int main(int argc, char **argv) {
         kill_thread("Failed to create pipe: %m");
     }
 
-    int clone_flags = SIGCHLD | CLONE_NEWUTS;
+    int clone_flags = SIGCHLD | CLONE_NEWUTS | CLONE_NEWUSER;
     int cmd_pid = clone(cmd_exec, cmd_stack + STACKSIZE, clone_flags, &params);
 
     if (cmd_pid < 0) {
@@ -98,7 +135,7 @@ int main(int argc, char **argv) {
 
     int pipe = params.fd[1];
 
-    // namespace setup
+    setup_uns(cmd_pid);
 
     if (write(pipe, "OK", 2) != 2) {
         kill_thread("Failed to write to pipe: %m");
