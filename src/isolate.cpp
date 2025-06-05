@@ -19,7 +19,7 @@ Mishenev Nikita 5131001/30002
 using namespace std;
 
 #define STACKSIZE       (1024*1024)
-#define DEFAULT_UID     (1000)
+#define DEFAULT_UID     (1002)
 
 static char cmd_stack[STACKSIZE];
 
